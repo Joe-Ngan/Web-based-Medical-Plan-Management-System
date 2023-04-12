@@ -3,16 +3,22 @@ package edu.northeastern.controller;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.github.fge.jsonschema.core.exceptions.ProcessingException;
 import com.github.fge.jsonschema.main.JsonSchema;
 import com.github.fge.jsonschema.main.JsonSchemaFactory;
+import edu.northeastern.Service.MessageQueueService;
+import edu.northeastern.Service.RedisService;
 import edu.northeastern.dto.ErrMessage;
 import edu.northeastern.dto.IdResponse;
 import edu.northeastern.excpetions.ResourceNotFoundException;
 import edu.northeastern.model.LinkedPlanService;
 import edu.northeastern.model.Plan;
 import edu.northeastern.repository.PlanRepository;
+import edu.northeastern.utils.JsonUtils;
 import edu.northeastern.utils.JwtUtils;
+import lombok.val;
+import org.checkerframework.checker.units.qual.A;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -36,6 +42,12 @@ public class PlanController {
     @Autowired
     private JwtUtils jwtUtils;
 
+    @Autowired
+    private RedisService redisService;
+
+    @Autowired
+    private MessageQueueService messageQueueService;
+
     private final JsonSchemaFactory factory = JsonSchemaFactory.byDefault();
 
     public PlanController(PlanRepository planRepository) {
@@ -58,20 +70,27 @@ public class PlanController {
             return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
         }else{
             //build etag
-            Plan plan = new ObjectMapper().readValue(request, Plan.class);
-            String ETag = generateEtag(plan.toString());
 
-            //store the body
-            planRepository.save(plan);
+            String objectId = requestBodyJson.get("objectId").textValue();
+            String objectType = requestBodyJson.get("objectType").textValue();
+            String planId = "id_" + objectType + "_" + objectId;
+            System.out.println(planId);
+
+            redisService.traverseInput(requestBodyJson);
+            redisService.postValue(planId, requestBodyJson.toString());
+            String value = redisService.getValue(planId);
+            String ETag = generateEtag(value);
+            System.out.println(ETag);
+
+            messageQueueService.publish(request, "post");
 
             //set headers with etag
             HttpHeaders headers = new HttpHeaders();
             headers.set("ETag", ETag);
 
             //set response
-            String objectId = plan.getObjectId();
-            IdResponse response = new IdResponse(objectId);
-
+            Map<String, String> response = new HashMap<>();
+            response.put("message", "Created data with key:"+objectId);
             //return response, headers, status
             return new ResponseEntity<>(response,headers,HttpStatus.CREATED);
         }
@@ -96,110 +115,142 @@ public class PlanController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
         }
         try{
+            String realId = "id_"+"plan"+"_"+planId;
+            String value = redisService.getValue(realId);
+            if(value==null) throw new ResourceNotFoundException("Plan with id " + planId + " not found");
             // check with header
             String ifNoneMatch = request.getHeader("If-None-Match");
-            Plan cachedPlan = planRepository.findById(planId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Plan with id " + planId + " not found"));
-
-            String resourceETag = generateEtag(cachedPlan.toString());
-
+            // TODO: match exist Etag with the header Etag
+            String resourceETag = generateEtag(value);
+            System.out.println(ifNoneMatch);
+            System.out.println(resourceETag);
             if (ifNoneMatch != null && resourceETag!=null && ifNoneMatch.equals(resourceETag)) {
                 return ResponseEntity.status(HttpStatus.NOT_MODIFIED).build();
             }
-
             //build etag
-            String ETag = generateEtag(cachedPlan.toString());
+            String ETag = generateEtag(value);
             //set headers with etag
             HttpHeaders headers = new HttpHeaders();
             headers.set("ETag", ETag);
 
-            if (cachedPlan.equals(null) || cachedPlan.equals(Optional.empty())) {
-                return new ResponseEntity<>(new ErrMessage("Object does not exist."), HttpStatus.NOT_FOUND);
-            } else {
-
-                return new ResponseEntity<>(cachedPlan,headers, HttpStatus.OK);
-            }
+            if (value.equals(null) || value.equals(Optional.empty()))throw new ResourceNotFoundException("Object does not exist.");
+            JsonNode node = JsonUtils.stringToNode((String)value);
+            redisService.populateNestedData(node, null);
+            return new ResponseEntity<>(node, headers, HttpStatus.OK);
         }catch (ResourceNotFoundException ex){
             Map<String, String> response = new HashMap<>();
-            response.put("message", "Object does not exist!");
+            response.put("message", ex.getMessage());
             return new ResponseEntity<>(response,HttpStatus.NOT_FOUND);
         }
     }
 
     @DeleteMapping("/{planId}")
-    public ResponseEntity<?> deleteById(@PathVariable String planId, @RequestHeader("Authorization") String tokenHeader){
+    public ResponseEntity<?> deleteById(@PathVariable String planId,HttpServletRequest request, @RequestHeader("Authorization") String tokenHeader){
         if(!jwtUtils.verify(tokenHeader)){
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
         }
         try{
-            Plan plan = planRepository.findById(planId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Plan with id " + planId + " not found"));
-            System.out.println("we found the object id: "+plan.getObjectId());
-            planRepository.deleteById(planId);
-            return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+            String realId = "id_"+"plan"+"_"+planId;
+            String value = redisService.getValue(realId);
+            if(value!=null) System.out.println("we found the object id: "+planId);
+            String etag = generateEtag(value);
+            String ifMatch = request.getHeader("If-Match");
+            if(etag.equals(ifMatch)){
+                Set<String> childIdSet = new HashSet<>();
+                childIdSet.add(realId);
+                redisService.populateNestedData(JsonUtils.stringToNode(value), childIdSet);
+                boolean deleted = true;
+                for(String id: childIdSet){
+                    deleted = deleted && redisService.deleteValue(id);
+                }
+                if(!deleted)throw new ResourceNotFoundException("Object "+planId+"does not exist!");
+                messageQueueService.publish(planId, "delete");
+                return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+            }else{
+                return new ResponseEntity<>("eTag not matched.", HttpStatus.BAD_REQUEST);
+            }
         }catch (ResourceNotFoundException ex){
             Map<String, String> response = new HashMap<>();
-            response.put("message", "Object does not exist!");
+            response.put("message", ex.getMessage());
             return new ResponseEntity<>(response,HttpStatus.NOT_FOUND);
+        }catch (NoSuchAlgorithmException ex){
+            return new ResponseEntity<>("NoSuchAlgorithmException", HttpStatus.BAD_REQUEST);
         }
     }
 
     @PatchMapping("/{planId}")
-    public ResponseEntity<?> patchById(@PathVariable String planId, @RequestBody String request, @RequestHeader("Authorization") String tokenHeader) throws NoSuchAlgorithmException, JsonProcessingException, ProcessingException, URISyntaxException{
+    public ResponseEntity<?> patchById(@PathVariable String planId, @RequestBody String requestBody,HttpServletRequest request, @RequestHeader("Authorization") String tokenHeader) throws NoSuchAlgorithmException, JsonProcessingException, ProcessingException, URISyntaxException{
         if(!jwtUtils.verify(tokenHeader)){
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
         }
-        //turn requestBody into JsonNode
-        JsonNode requestBodyJson = new ObjectMapper().readTree(request);
+        try{
+            String realId = "id_"+"plan"+"_"+planId;
+            String value = redisService.getValue(realId);
+            if(value==null) throw new ResourceNotFoundException("Plan with id " + planId + " not found");
 
-        //verify the pattern match with json schema
-        URL url = getClass().getResource("/patchSchema.json");
-        JsonSchema schema = factory.getJsonSchema(String.valueOf(url.toURI()));;
+            // if-Match
+            String oldEtag = generateEtag(value);
+            String ifMatch = request.getHeader("If-Match");
+            if(!oldEtag.equals(ifMatch)){
+                return new ResponseEntity<>("eTag not valid",HttpStatus.PRECONDITION_FAILED);
+            }
 
-        if(!schema.validate(requestBodyJson).isSuccess()){
-            return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
-        }else{
-            try{
-                //generate the new linkedPlanService
-                LinkedPlanService newLinkedPlanService = new ObjectMapper().readValue(request, LinkedPlanService.class);
-                //delete the old Plan
-                Plan plan = planRepository.findById(planId)
-                        .orElseThrow(() -> new ResourceNotFoundException("Plan with id " + planId + " not found"));
-                System.out.println("we found the object id: "+plan.getObjectId());
-                planRepository.deleteById(planId);
+            JsonNode oldNode = JsonUtils.stringToNode(value);
+            redisService.populateNestedData(oldNode, null);
+            value = oldNode.toString();
 
-                //renew the old LinkedPlanServices
-                List<LinkedPlanService> oldPlanLinkedPlanServices = plan.getLinkedPlanServices();
-                Iterator<LinkedPlanService> iterator = oldPlanLinkedPlanServices.iterator();
+            //turn requestBody into JsonNode
+            JsonNode newNode = new ObjectMapper().readTree(requestBody);
+
+            //verify the pattern match with json schema
+            URL url = getClass().getResource("/patchSchema.json");
+            JsonSchema schema = factory.getJsonSchema(String.valueOf(url.toURI()));;
+            if(!schema.validate(newNode).isSuccess())return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+
+            // add old to new (linkedPlanServices)
+            ArrayNode newPlanServices = (ArrayNode) newNode.get("linkedPlanServices");
+            newPlanServices.addAll((ArrayNode) oldNode.get("linkedPlanServices"));
+
+            //filter the repeated
+            Set<JsonNode> planServicesSet = new HashSet<>();
+            Set<String> objectIds = new HashSet<>();
+            for (JsonNode node : newPlanServices) {
+                Iterator<Map.Entry<String, JsonNode>> iterator = node.fields();
                 while (iterator.hasNext()) {
-                    LinkedPlanService obj = iterator.next();
-                    if (obj.getObjectId().equals(newLinkedPlanService.getObjectId())) {
-                        iterator.remove();
-                        break;
+                    Map.Entry<String, JsonNode> entry = iterator.next();
+                    String k = entry.getKey();
+                    String v = entry.getValue().toString();
+                    if (k.equals("objectId")) {//find every objectId in linkedPlanServices
+                        if (!objectIds.contains(v)) {//add for the non-repeated
+                            planServicesSet.add(node);
+                            objectIds.add(v);
+                        }
                     }
                 }
-                oldPlanLinkedPlanServices.add(newLinkedPlanService);
-                plan.setLinkedPlanServices(oldPlanLinkedPlanServices);
-
-                //build etag and save the new plan
-                String ETag = generateEtag(plan.toString());
-                planRepository.save(plan);
-
-                //set headers with etag
-                HttpHeaders headers = new HttpHeaders();
-                headers.set("ETag", ETag);
-
-                //set response
-                String objectId = plan.getObjectId();
-                IdResponse response = new IdResponse(objectId);
-
-                //return response, headers, status
-                return new ResponseEntity<>(response,headers,HttpStatus.OK);
-            }catch (ResourceNotFoundException ex) {
-                Map<String, String> response = new HashMap<>();
-                response.put("message", "Object does not exist!");
-                return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
             }
+
+            newPlanServices.removeAll();
+
+            if (!planServicesSet.isEmpty()){
+                planServicesSet.forEach(s -> {
+                    newPlanServices.add(s);
+                });
+            }
+
+            redisService.traverseInput(newNode);
+            redisService.postValue(realId, newNode.toString());
+
+            //build etag with the new plan
+            String newETag = generateEtag(redisService.getValue(realId));
+            //set headers with etag
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("ETag", newETag);
+            //return response, headers, status
+            return new ResponseEntity<>(planId+" updated.",headers,HttpStatus.OK);
+        }catch (ResourceNotFoundException ex) {
+            Map<String, String> response = new HashMap<>();
+            response.put("message", ex.getMessage());
+            return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
         }
     }
 }

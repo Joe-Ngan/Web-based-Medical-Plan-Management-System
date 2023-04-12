@@ -7,14 +7,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.northeastern.model.Plan;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.GenericToStringSerializer;
 import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 @Configuration
 public class RedisConfig {
 
-    //connection
     @Bean
     JedisConnectionFactory jedisConnectionFactory() {
         JedisConnectionFactory jedisConFactory
@@ -22,12 +24,13 @@ public class RedisConfig {
         return jedisConFactory;
     }
 
-    //Plan
     @Bean
-    public RedisTemplate<String, Plan> redisTemplate() {
-        RedisTemplate<String, Plan> template = new RedisTemplate<>();
+    public RedisTemplate<String, ?> redisTemplate() {
+        RedisTemplate<String, ?> template = new RedisTemplate();
         template.setConnectionFactory(jedisConnectionFactory());
-
+        template.setKeySerializer(new StringRedisSerializer());
+        template.setHashValueSerializer(new GenericToStringSerializer(Object.class));
+        template.setValueSerializer(new GenericToStringSerializer<>(Object.class));
         return template;
     }
 }
