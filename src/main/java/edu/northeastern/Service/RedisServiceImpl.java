@@ -110,13 +110,5 @@ public class RedisServiceImpl implements RedisService{
         }
     }
 
-    @Override
-    public boolean deleteValue(String key) {
-        return planRepository.deleteValue(key);
-    }
 
-    @Override
-    public String getHash(String key) {
-        return planRepository.getHash(key);
-    }
 }

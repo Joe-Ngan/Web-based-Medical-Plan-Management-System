@@ -11,71 +11,57 @@ import org.springframework.stereotype.Repository;
 import redis.clients.jedis.JedisPooled;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 @Repository
 public class PlanRepositoryImpl<T> implements PlanRepository<T> {
 
-    private RedisTemplate<String, T> redisTemplate;
-    private HashOperations<String, Object, T> hashOperation;
-    private ValueOperations<String, T> valueOperations;
+    private static final String hostname = "localhost";
+    private static final Integer redis_port = 6379;
+    private final JedisPooled jedis = new JedisPooled(hostname, redis_port);
 
-    @Autowired
-    PlanRepositoryImpl(RedisTemplate<String, T> redisTemplate) {
-        this.redisTemplate = redisTemplate;
-        this.hashOperation = redisTemplate.opsForHash();
-        this.valueOperations = redisTemplate.opsForValue();
-        this.listOperations = redisTemplate.opsForList();
+    @Override
+    public void putValue(String key, String value) {
+        jedis.set(key, value);
     }
 
     @Override
-    public void putValue(String key, T value) {
-        valueOperations.set(key, value);
-        valueOperations.set(key+"_hash", (T)String.valueOf(System.currentTimeMillis()));
+    public String getValue(String key) {
+        return jedis.get(key);
     }
 
     @Override
-    public void putValueWithExpireTime(String key, T value, long timeout, TimeUnit unit) {
-        valueOperations.set(key, (T) value, timeout, unit);
+    public void hSet(String key, String field, String value) {
+        jedis.hset(key, field, value);
     }
 
     @Override
-    public T getValue(String key) {
-        return valueOperations.get(key);
+    public String hGet(String key, String field) {
+        return jedis.hget(key, field);
     }
 
     @Override
-    public T getHash(String key) {
-        return valueOperations.get(key+"_hash");
+    public Map<String, String> hGetAll(String key) {
+        return jedis.hgetAll(key);
     }
 
     @Override
-    public boolean deleteValue(String key) {
-        return redisTemplate.delete(key);
+    public void lpush(String key, String value) { jedis.lpush(key, value); }
+
+    @Override
+    public boolean existsKey(String key) {
+        return jedis.exists(key);
     }
 
     @Override
-    public void putMapEntry(String redisKey, Object key, T data) {
-        hashOperation.put(redisKey, key, data);
+    public Set<String> getKeysByPattern(String pattern) {
+        return jedis.keys(pattern);
     }
 
     @Override
-    public T getMapValue(String redisKey, Object key) {
-        return hashOperation.get(redisKey, key);
+    public Long deleteValue(String key) {
+        return jedis.del(key);
     }
 
-    @Override
-    public Map<Object, T> getMapEntries(String redisKey) {
-        return hashOperation.entries(redisKey);
-    }
-
-    @Override
-    public void setExpire(String key, long timeout, TimeUnit unit) {
-        redisTemplate.expire(key, timeout, unit);
-    }
-
-    @Override
-    public void publish(String key, T value){
-        redisTemplate.convertAndSend(key, value);
-    }
 }

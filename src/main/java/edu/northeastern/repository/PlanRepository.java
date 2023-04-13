@@ -1,26 +1,27 @@
 package edu.northeastern.repository;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public interface PlanRepository<T> {
-    public void putValue(String key, T value);
 
-    public void putValueWithExpireTime(String key, T value, long timeout, TimeUnit unit);
+    public void putValue(String key, String value);
 
-    public T getValue(String key);
+    public String getValue(String key);
 
-    public T getHash(String key);
+    public void hSet(String key, String field, String value);
 
-    public boolean deleteValue(String key);
+    public String hGet(String key, String field);
 
-    public void putMapEntry(String redisKey, Object key, T data);
+    public Map<String, String> hGetAll(String key);
 
-    public T getMapValue(String redisKey, Object key);
+    public void lpush(String key, String value);
 
-    public Map<Object, T> getMapEntries(String redisKey);
+    public boolean existsKey(String key);
 
-    public void setExpire(String key, long timeout, TimeUnit unit);
+    public Set<String> getKeysByPattern(String pattern);
 
-    public void publish(String key, T value);
+    public Long deleteValue(String key);
+
 }

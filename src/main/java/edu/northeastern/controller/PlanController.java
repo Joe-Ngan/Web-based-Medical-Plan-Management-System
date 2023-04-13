@@ -19,6 +19,8 @@ import edu.northeastern.utils.JsonUtils;
 import edu.northeastern.utils.JwtUtils;
 import lombok.val;
 import org.checkerframework.checker.units.qual.A;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -32,6 +34,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/plan")
@@ -49,6 +52,8 @@ public class PlanController {
     private MessageQueueService messageQueueService;
 
     private final JsonSchemaFactory factory = JsonSchemaFactory.byDefault();
+
+    private static final Logger logger = LoggerFactory.getLogger(JwtUtils.class);
 
     public PlanController(PlanRepository planRepository) {
         this.planRepository = planRepository;
@@ -74,13 +79,11 @@ public class PlanController {
             String objectId = requestBodyJson.get("objectId").textValue();
             String objectType = requestBodyJson.get("objectType").textValue();
             String planId = "id_" + objectType + "_" + objectId;
-            System.out.println(planId);
-
+            logger.info("[POST] planId: ("+planId + ") is generated in process of creating a new plan");
             redisService.traverseInput(requestBodyJson);
             redisService.postValue(planId, requestBodyJson.toString());
             String value = redisService.getValue(planId);
             String ETag = generateEtag(value);
-            System.out.println(ETag);
 
             messageQueueService.publish(request, "post");
 
@@ -122,8 +125,7 @@ public class PlanController {
             String ifNoneMatch = request.getHeader("If-None-Match");
             // TODO: match exist Etag with the header Etag
             String resourceETag = generateEtag(value);
-            System.out.println(ifNoneMatch);
-            System.out.println(resourceETag);
+
             if (ifNoneMatch != null && resourceETag!=null && ifNoneMatch.equals(resourceETag)) {
                 return ResponseEntity.status(HttpStatus.NOT_MODIFIED).build();
             }
@@ -152,18 +154,18 @@ public class PlanController {
         try{
             String realId = "id_"+"plan"+"_"+planId;
             String value = redisService.getValue(realId);
-            if(value!=null) System.out.println("we found the object id: "+planId);
+            if(value!=null) logger.info("[DELETE] planId: ("+realId + ") is fetched in process of deleting "+planId);
             String etag = generateEtag(value);
             String ifMatch = request.getHeader("If-Match");
             if(etag.equals(ifMatch)){
                 Set<String> childIdSet = new HashSet<>();
                 childIdSet.add(realId);
                 redisService.populateNestedData(JsonUtils.stringToNode(value), childIdSet);
-                boolean deleted = true;
+                List<String> undeleted = new ArrayList<>();
                 for(String id: childIdSet){
-                    deleted = deleted && redisService.deleteValue(id);
+                    if(planRepository.deleteValue(id)==0)undeleted.add(id);
                 }
-                if(!deleted)throw new ResourceNotFoundException("Object "+planId+"does not exist!");
+                if(undeleted.size()>0)throw new ResourceNotFoundException("Objects do not exist!"+undeleted.stream().collect(Collectors.joining(", ")));
                 messageQueueService.publish(planId, "delete");
                 return new ResponseEntity<>(HttpStatus.NO_CONTENT);
             }else{

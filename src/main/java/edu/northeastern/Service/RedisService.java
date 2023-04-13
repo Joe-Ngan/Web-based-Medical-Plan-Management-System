@@ -14,7 +14,4 @@ public interface RedisService {
 
     public void populateNestedData(JsonNode parent, Set<String> childIdSet);
 
-    public boolean deleteValue(final String key);
-
-    public String getHash(String key);
 }

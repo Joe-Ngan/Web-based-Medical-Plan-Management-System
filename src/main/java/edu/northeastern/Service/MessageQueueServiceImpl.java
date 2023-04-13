@@ -21,6 +21,6 @@ public class MessageQueueServiceImpl implements MessageQueueService{
         ObjectNode objectNode = new ObjectMapper().createObjectNode();
         objectNode.put(messageField, message);
         objectNode.put(operationField, operation);
-        planRepository.publish(messageQueue, objectNode.toString());
+        planRepository.lpush(messageQueue, objectNode.toString());
     }
 }
