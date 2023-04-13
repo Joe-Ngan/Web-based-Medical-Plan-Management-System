@@ -157,6 +157,7 @@ public class PlanController {
             if(value!=null) logger.info("[DELETE] planId: ("+realId + ") is fetched in process of deleting "+planId);
             String etag = generateEtag(value);
             String ifMatch = request.getHeader("If-Match");
+            if(ifMatch==null)return new ResponseEntity<>("eTag is required.", HttpStatus.BAD_REQUEST);
             if(etag.equals(ifMatch)){
                 Set<String> childIdSet = new HashSet<>();
                 childIdSet.add(realId);

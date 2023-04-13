@@ -20,6 +20,11 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.index.reindex.BulkByScrollResponse;
+import org.elasticsearch.index.reindex.DeleteByQueryRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,10 +36,7 @@ import org.springframework.util.FileCopyUtils;
 import redis.clients.jedis.JedisPooled;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 
@@ -59,9 +61,9 @@ public class MessageQueueListener {
     private static final String operationDelete = "delete";
 
     private static final String indexShards = "index.number_of_shards";
-    private static final Integer numOfShards = 1;
+    private static final Integer numOfShards = 3;
     private static final String indexReplicas = "index.number_of_replicas";
-    private static final Integer numOfReplicas = 1;
+    private static final Integer numOfReplicas = 2;
 
     private static final String plan_pcs = "planCostShares";
     private static final String plan_ls = "linkedService";
@@ -82,7 +84,7 @@ public class MessageQueueListener {
         try {
             if (!indexExists()) {
                 String index = createElasticIndex();
-                logger.info("Index "+index+ " created.");
+                logger.info("Index "+index+" created.");
             } else {
                 logger.info("Index already existed.");
             }
@@ -100,7 +102,6 @@ public class MessageQueueListener {
                 String message = job.get(messageField).asText();
                 String operation = job.get(operationField).asText();
                 logger.info("New Job Message Queue received: Operation: " + operation + ". Message:" + message);
-
                 if (operation.equals(operationPost)) {
                     JsonNode plan = new ObjectMapper().readTree(message);
                     String result = postDocument(plan, null, null, indexName);
@@ -113,6 +114,7 @@ public class MessageQueueListener {
                 }
             } catch (JsonProcessingException ex){
                 logger.error("Unable to process message as JsonNode:"+ ex.getMessage());
+                break;
             } catch (IOException ex) {
                 logger.error("Unidentified Operation Type detected: "+ ex.getMessage());
                 break;
@@ -124,8 +126,7 @@ public class MessageQueueListener {
 
     private static boolean indexExists() throws IOException {
         GetIndexRequest request = new GetIndexRequest(indexName);
-        boolean exist = client.indices().exists(request, RequestOptions.DEFAULT);
-        return exist;
+        return client.indices().exists(request, RequestOptions.DEFAULT);
     }
 
     private static String createElasticIndex() throws IOException {
@@ -140,193 +141,100 @@ public class MessageQueueListener {
         return client.indices().create(request, RequestOptions.DEFAULT).index();
     }
 
-    private static String postDocument(JsonNode jsonNode, String parentId, String ancestorId, String name) throws IOException {
+    private static String postDocument(JsonNode jsonNode, String parentId, String ancestorId, String name) {
         if(jsonNode==null) return null;
-        IndexRequest request = new IndexRequest(indexName);
-        String documentId = jsonNode.get(plan_objid).asText();
-        String documentType = jsonNode.get(plan_objt).asText();
+        try{
+            IndexRequest request = new IndexRequest(indexName);
+            String documentId = jsonNode.get(plan_objid).asText();
+            request.id(documentId);
+            if(ancestorId == null) {
+                ancestorId = parentId;
+            }
+            if(ancestorId == null) {
+                ancestorId = documentId;
+            }
+            request.routing(ancestorId);
+            request.source(generateBuilder(jsonNode, parentId, name));
 
-        request.id(documentId);
-        if(ancestorId == null) ancestorId = parentId;
-        request.routing(ancestorId);
+            IndexResponse indexResponse = client.index(request, RequestOptions.DEFAULT);
 
-        /**------------new builder-------------**/
-        XContentBuilder builder = XContentFactory.jsonBuilder();
-        builder.startObject();
-        builder.field(plan_org, jsonNode.get(plan_org).asText());
-        builder.field(plan_objt, jsonNode.get(plan_objt).asText());
-        builder.field(plan_objid, jsonNode.get(plan_objid).asText());
-        if(jsonNode.get(plan_pt)!=null) builder.field(plan_pt, jsonNode.get(plan_pt).asText());
-        if(jsonNode.get(plan_cd)!=null) builder.field(plan_cd, jsonNode.get(plan_cd).asText());
-        if(jsonNode.get(plan_cp)!=null) builder.field(plan_cp, jsonNode.get(plan_cp).asText());
-        if(jsonNode.get(plan_dd)!=null) builder.field(plan_dd, jsonNode.get(plan_dd).asText());
-        if(jsonNode.get(plan_name)!=null) builder.field(plan_name, jsonNode.get(plan_name).asText());
-        if(parentId==null){
-            builder.startObject("plan_join").field("name", "plan").endObject();
-        }else{
-            builder.startObject("plan_join");
-            builder.field("parent", parentId);
-            builder.field("name", name);
-            builder.endObject();
+            checkForNestedObjectsInJsonNode(jsonNode, documentId, ancestorId);
+            logger.info("Document with id: "+indexResponse.getId()+" posted.");
+            return indexResponse.getResult().name();
+        }catch (IOException ex){
+            logger.error("Error occurred in creating document"+jsonNode.get(plan_objid).asText()+": "+ex.getMessage());
+            ex.printStackTrace();
+            return null;
         }
-        builder.endObject();
-        request.source(builder);
-        /**------------to solve the problem-------------**/
-        //JsonNode document = generateDocument(jsonNode, parentId, ancestorId, name);
-        //request.source(document.toString(), XContentType.JSON);
-        /**------------to replace the old version-------------**/
+    }
 
-        IndexResponse indexResponse = client.index(request, RequestOptions.DEFAULT);
-        final String ancId = ancestorId;
-
+    private static void checkForNestedObjectsInJsonNode(JsonNode jsonNode, String documentId, String ancestorId) {
         jsonNode.fields().forEachRemaining(e -> {
             String key = e.getKey();
-            try{
-                switch (key){
-                    case plan_pcs:
-                        postDocument(jsonNode.get(plan_pcs), documentId, ancId, plan_pcs);
-                        break;
-                    case plan_ls:
-                        postDocument(jsonNode.get(plan_ls), documentId, ancId, plan_ls);
-                        break;
-                    case plan_pscs:
-                        postDocument(jsonNode.get(plan_pscs), documentId, ancId, plan_pscs);
-                        break;
-                    case plan_lps:
-                        postArrDocument(jsonNode.get(plan_lps), documentId, ancId);
-                        break;
-                    default:
-                        logger.info("Plain text key "+key+"-"+e.getValue()+"skipped in processing the objects and arrays in postDocument");
-                        break;
-                }
-            }catch (IOException ex){
-                logger.error("Error occurs when attempting to post document with key: "+key);
-            }
-        });
-        logger.info("Document with id: "+indexResponse.getId()+" posted.");
-        return indexResponse.getResult().name();
-    }
-
-    private static JsonNode generateDocument(JsonNode jsonNode, String parentId,String ancestorId, String name) {
-        String documentId = jsonNode.get(plan_objid).asText();
-        ObjectMapper mapper = new ObjectMapper();
-        ObjectNode planJoin = mapper.createObjectNode();
-        ObjectNode document = mapper.createObjectNode();
-        //parent-child relationship set up
-        if (parentId != null) planJoin.put("parent", parentId);
-        planJoin.put("name", name);
-        document.set("plan_join", planJoin);
-
-//        {
-//            "title":"Parent Document",
-//            "join_field":{
-//                "name":"parent",
-//                "parent":""
-//            }
-//        }
-
-        //for the plain key value pairs
-        jsonNode.fields().forEachRemaining(e -> {
-            switch (e.getKey()){
-                case plan_pt:
-                    document.put(plan_pt, e.getValue().asText());
+            switch (key){
+                case plan_pcs:
+                    postDocument(jsonNode.get(plan_pcs), documentId, ancestorId, plan_pcs);
                     break;
-                case plan_cd:
-                    document.put(plan_cd, e.getValue().asText());
+                case plan_ls:
+                    postDocument(jsonNode.get(plan_ls), documentId, ancestorId, plan_ls);
                     break;
-                case plan_dd:
-                    document.put(plan_dd, e.getValue().longValue());
+                case plan_pscs:
+                    postDocument(jsonNode.get(plan_pscs), documentId, ancestorId, plan_pscs);
                     break;
-                case plan_cp:
-                    document.put(plan_cp, e.getValue().longValue());
+                case plan_lps:
+                    postArrDocument(jsonNode.get(plan_lps), documentId, ancestorId);
                     break;
-                case plan_name:
-                    document.put(plan_name, e.getValue().asText());
-                    break;
-                case plan_org:
-                    document.put(plan_org, e.getValue().asText());
-                    break;
-                case plan_objid:
-                    document.put(plan_objid, e.getValue().asText());
-                    break;
-                case plan_objt:
-                    document.put(plan_objt, e.getValue().asText());
-                    break;
-//                case plan_pcs:
-//                    try {
-//                        postDocument(jsonNode.get(plan_pcs), documentId, ancestorId, plan_pcs);
-//                    } catch (IOException ex) {
-//                        ex.printStackTrace();
-//                    }
-//                    break;
-//                case plan_ls:
-//                    try {
-//                        postDocument(jsonNode.get(plan_ls), documentId, ancestorId, plan_ls);
-//                    } catch (IOException ex) {
-//                        ex.printStackTrace();
-//                    }
-//                    break;
-//                case plan_pscs:
-//                    try {
-//                        postDocument(jsonNode.get(plan_pscs), documentId, ancestorId, plan_pscs);
-//                    } catch (IOException ex) {
-//                        ex.printStackTrace();
-//                    }
-//                    break;
-//                case plan_lps:
-//                    postArrDocument(jsonNode.get(plan_lps), documentId, ancestorId);
-//                    break;
                 default:
-                    logger.warn("Unexpected key-value "+e.getKey()+"-"+e.getValue()+"skipped in processing the plain key value pairs in generateDocument.");
+                    logger.info("Plain-text key "+key+"-"+e.getValue()+"skipped in checking nested objects.");
                     break;
             }
         });
-        return document;
     }
 
-    private static List<String> getObjectListId(JsonNode value) {
-        List<String> idSet = new ArrayList<>();
-        ArrayNode arr = (ArrayNode) value;
-        arr.forEach(obj -> {
-            try {
-                JsonNode id = obj.get(plan_objid);
-                if(id.isEmpty()) throw new IOException("Fail to retrieve ids of "+value.asText());
-                idSet.add(id.asText());
-            } catch (IOException ex) {
-                logger.error("[generateDocument]"+ex.getMessage());
-                ex.printStackTrace();
+    private static XContentBuilder generateBuilder(JsonNode jsonNode, String parentId, String name) {
+        try {
+            XContentBuilder builder = XContentFactory.jsonBuilder();
+            builder.startObject();
+            for(String key : new ArrayList<>(Arrays.asList(plan_org, plan_objt, plan_objid, plan_pt, plan_cd, plan_cp, plan_dd, plan_name))){
+                if(jsonNode.get(key)!=null){
+                    builder.field(key, jsonNode.get(key).asText());
+                }
             }
-        });
-        return idSet;
-    }
-
-    private static String getObjectId(JsonNode value) {
-        try{
-            JsonNode id = value.get(plan_objid);
-            if(id.isEmpty()) throw new IOException("Fail to retrieve id of "+value.asText());
-            return id.asText();
-        }catch (IOException ex) {
-            logger.error("[generateDocument]"+ex.getMessage());
-            ex.printStackTrace();
+            if(parentId==null){
+                builder.startObject("plan_join").field("name", "plan").endObject();
+            }else{
+                builder.startObject("plan_join");
+                builder.field("parent", parentId);
+                builder.field("name", name);
+                builder.endObject();
+            }
+            builder.endObject();
+            return builder;
+        }catch (IOException ex){
+            logger.error("Error occurs when attempting to building XContentBuilder: "+ex.getMessage());
             return null;
         }
     }
 
     private static void postArrDocument(JsonNode jsonNode, String documentId, String ancestorId) {
         ArrayNode jsonArray = (ArrayNode) jsonNode;
-        jsonArray.forEach(jn -> {
-            try {
-                postDocument(jn, documentId, ancestorId, plan_lps);
-            } catch (IOException e) {
-                logger.error("Error occurs when attempting to post linkedPlanServices with JsonNode "+ jn.asText());
-            }
-        });
+        jsonArray.forEach(jn -> postDocument(jn, documentId, ancestorId, plan_lps));
     }
 
     private static String deleteDocument(String documentId) throws IOException {
-        DeleteRequest request = new DeleteRequest(indexName, documentId);
-        DeleteResponse response = client.delete(request, RequestOptions.DEFAULT);
-        logger.info("Document with id: "+response.getId()+" deleted.");
-        return response.toString();
+        if(documentId==null)return null;
+        try {
+            DeleteByQueryRequest request = new DeleteByQueryRequest(indexName);
+            QueryBuilder queryBuilder = QueryBuilders.matchQuery("_routing", documentId);
+            request.setQuery(queryBuilder);
+            request.setRefresh(true);
+            BulkByScrollResponse response = client.deleteByQuery(request, RequestOptions.DEFAULT);
+            logger.info(response.getDeleted()+" Document(s) with id: "+documentId+" and its children deleted.");
+            return response.toString();
+        }catch (IOException ex){
+            logger.error("Error occurred in creating document "+documentId+". "+ex.getMessage());
+            ex.printStackTrace();
+            return null;
+        }
     }
 }
