@@ -2,7 +2,7 @@ package edu.northeastern.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import edu.northeastern.listener.MessageQueueListener;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.http.HttpHost;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.elasticsearch.action.index.IndexRequest;
@@ -62,10 +62,10 @@ public class ElasticsearchService {
             if (exist) {
                 client.indices().delete(new DeleteIndexRequest(indexName), RequestOptions.DEFAULT);
                 String index = createElasticIndex();
-                logger.info("Index "+index+" destroyed and recreated.");
+                logger.info("Index "+index+" successfully destroyed and recreated.");
             } else {
                 String index = createElasticIndex();
-                logger.info("Index "+index+" created.");
+                logger.info("Index "+index+" successfully created.");
             }
         } catch (IOException ex) {
             logger.error("Error occurred when initializing message queue listener! "+ex.getMessage());
@@ -180,5 +180,65 @@ public class ElasticsearchService {
             ex.printStackTrace();
             return null;
         }
+    }
+
+    public static String patchDocument(JsonNode objectNode, String parentId, String ancestorId, String name) {
+        if(objectNode==null) return null;
+        try{
+            ArrayNode oldPlanNodelinkedPlanServices = (ArrayNode)objectNode.get("linkedPlanServices");
+            for (JsonNode jn : oldPlanNodelinkedPlanServices) {
+                JsonNode linkedService = jn.get("linkedService");
+                JsonNode objectId = linkedService.get("objectId");
+                System.out.println("First we got object Id in linkedService"+objectId.asText());
+            }
+            IndexRequest request = new IndexRequest(indexName);
+            String documentId = objectNode.get(plan_objid).asText();
+            request.id(documentId);
+            if(ancestorId == null) {
+                ancestorId = parentId;
+            }
+            if(ancestorId == null) {
+                ancestorId = documentId;
+            }
+            request.routing(ancestorId);
+            request.source(generateBuilder(objectNode, parentId, name));
+
+            IndexResponse indexResponse = client.index(request, RequestOptions.DEFAULT);
+
+            checkForNestedObjectsInJsonNode(objectNode, documentId, ancestorId);
+            logger.info("Document with id: "+indexResponse.getId()+" posted.");
+            return indexResponse.getResult().name();
+        }catch (IOException ex){
+            logger.error("Error occurred in creating document"+objectNode.get(plan_objid).asText()+": "+ex.getMessage());
+            ex.printStackTrace();
+            return null;
+        } catch (NullPointerException ex){
+            System.out.println(ex.getMessage());
+            return null;
+        }
+    }
+
+    private static void checkForNestedObjectsInJsonNodePatch(ObjectNode jsonNode, String documentId, String ancestorId) {
+        jsonNode.fields().forEachRemaining(e -> {
+            String key = e.getKey();
+            switch (key){
+                case plan_pcs:
+                    postDocument(jsonNode.get(plan_pcs), documentId, ancestorId, plan_pcs);
+                    break;
+                case plan_ls:
+                    postDocument(jsonNode.get(plan_ls), documentId, ancestorId, plan_ls);
+                    break;
+                case plan_pscs:
+                    postDocument(jsonNode.get(plan_pscs), documentId, ancestorId, plan_pscs);
+                    break;
+                case plan_lps:
+                    ArrayNode jsonArray = (ArrayNode) jsonNode.get(plan_lps);
+                    jsonArray.forEach(jn -> postDocument(jn, documentId, ancestorId, plan_lps));
+                    break;
+                default:
+                    logger.info("Skipping plain text key value pair ("+key+"-"+e.getValue()+") in iterating nested objects.");
+                    break;
+            }
+        });
     }
 }

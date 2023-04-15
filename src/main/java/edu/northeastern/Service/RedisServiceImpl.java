@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import edu.northeastern.excpetions.ResourceNotFoundException;
 import edu.northeastern.repository.PlanRepository;
 import edu.northeastern.utils.JsonUtils;
 import lombok.val;
@@ -11,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class RedisServiceImpl implements RedisService{
@@ -108,5 +110,20 @@ public class RedisServiceImpl implements RedisService{
                 }
             });
         }
+    }
+
+    @Override
+    public List<String> deleteValueTraverse(String id) {
+        Set<String> childIdSet = new HashSet<>();
+        childIdSet.add(id);
+
+        populateNestedData(JsonUtils.stringToNode(getValue(id)), childIdSet);
+
+        List<String> undeleted = new ArrayList<>();
+        for(String childId: childIdSet){
+            if(planRepository.deleteValue(childId)==0)undeleted.add(id);
+        }
+        return undeleted;
+
     }
 }
