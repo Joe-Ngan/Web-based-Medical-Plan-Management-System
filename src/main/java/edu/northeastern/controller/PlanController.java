@@ -7,18 +7,12 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.github.fge.jsonschema.core.exceptions.ProcessingException;
 import com.github.fge.jsonschema.main.JsonSchema;
 import com.github.fge.jsonschema.main.JsonSchemaFactory;
-import edu.northeastern.Service.MessageQueueService;
+import edu.northeastern.Service.RabbitMQService;
 import edu.northeastern.Service.RedisService;
-import edu.northeastern.dto.ErrMessage;
-import edu.northeastern.dto.IdResponse;
 import edu.northeastern.excpetions.ResourceNotFoundException;
-import edu.northeastern.model.LinkedPlanService;
-import edu.northeastern.model.Plan;
 import edu.northeastern.repository.PlanRepository;
 import edu.northeastern.utils.JsonUtils;
 import edu.northeastern.utils.JwtUtils;
-import lombok.val;
-import org.checkerframework.checker.units.qual.A;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,6 +44,9 @@ public class PlanController {
 
     @Autowired
     private MessageQueueService messageQueueService;
+
+    @Autowired
+    private RabbitMQService rabbitMQService;
 
     private final JsonSchemaFactory factory = JsonSchemaFactory.byDefault();
 
@@ -85,7 +82,7 @@ public class PlanController {
             String value = redisService.getValue(planId);
             String ETag = generateEtag(value);
 
-            messageQueueService.publish(request, "post");
+            rabbitMQService.sendDocument(request, "post");
 
             //set headers with etag
             HttpHeaders headers = new HttpHeaders();
@@ -167,7 +164,7 @@ public class PlanController {
                     if(planRepository.deleteValue(id)==0)undeleted.add(id);
                 }
                 if(undeleted.size()>0)throw new ResourceNotFoundException("Objects do not exist!"+undeleted.stream().collect(Collectors.joining(", ")));
-                messageQueueService.publish(planId, "delete");
+                rabbitMQService.sendDocument(planId, "delete");
                 return new ResponseEntity<>(HttpStatus.NO_CONTENT);
             }else{
                 return new ResponseEntity<>("eTag not matched.", HttpStatus.BAD_REQUEST);
@@ -178,6 +175,8 @@ public class PlanController {
             return new ResponseEntity<>(response,HttpStatus.NOT_FOUND);
         }catch (NoSuchAlgorithmException ex){
             return new ResponseEntity<>("NoSuchAlgorithmException", HttpStatus.BAD_REQUEST);
+        }catch (NullPointerException ex){
+            return new ResponseEntity<>(ex.getMessage(), HttpStatus.BAD_REQUEST);
         }
     }
 

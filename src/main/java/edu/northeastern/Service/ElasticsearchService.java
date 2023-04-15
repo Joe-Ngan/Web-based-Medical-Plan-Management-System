@@ -1,14 +1,10 @@
-package edu.northeastern.listener;
+package edu.northeastern.Service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import edu.northeastern.Demo1Application;
+import edu.northeastern.listener.MessageQueueListener;
 import org.apache.http.HttpHost;
-import org.elasticsearch.action.delete.DeleteRequest;
-import org.elasticsearch.action.delete.DeleteResponse;
+import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.RequestOptions;
@@ -20,50 +16,28 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
 import org.elasticsearch.common.xcontent.XContentType;
-import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.index.reindex.BulkByScrollResponse;
 import org.elasticsearch.index.reindex.DeleteByQueryRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.Resource;
-import org.springframework.core.io.ResourceLoader;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 import org.springframework.util.FileCopyUtils;
-import redis.clients.jedis.JedisPooled;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
 
-import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
-
-@Component
-public class MessageQueueListener {
+@Service
+public class ElasticsearchService {
 
     private static final String hostname = "localhost";
-    private static final Integer redis_port = 6379;
     private static final Integer elastic_port = 9200;
     private static final String scheme = "http";
     private static final String indexName="indexplan";
-
-    private static final Logger logger = LoggerFactory.getLogger(MessageQueueListener.class);
-    private static final JedisPooled jedis = new JedisPooled(hostname, redis_port);
-    private static RestHighLevelClient client ;
-
-    private static final String messageQueue = "MessageQueue";
-    private static final String workingQueue = "WorkingQueue";
-    private static final String messageField = "message";
-    private static final String operationField = "operation";
-    private static final String operationPost = "post";
-    private static final String operationDelete = "delete";
-
-    private static final String indexShards = "index.number_of_shards";
-    private static final Integer numOfShards = 3;
-    private static final String indexReplicas = "index.number_of_replicas";
-    private static final Integer numOfReplicas = 2;
 
     private static final String plan_pcs = "planCostShares";
     private static final String plan_ls = "linkedService";
@@ -78,56 +52,30 @@ public class MessageQueueListener {
     private static final String plan_objid = "objectId";
     private static final String plan_org = "_org";
 
-    public static void initMessageQueue() {
-        client = new RestHighLevelClient(RestClient.builder(new HttpHost(hostname, elastic_port, scheme)));
-        logger.info("Message Queue started at: "+hostname+":"+elastic_port);
+    private static final RestHighLevelClient client = new RestHighLevelClient(RestClient.builder(new HttpHost(hostname, elastic_port, scheme)));
+    private static final Logger logger = LoggerFactory.getLogger(ElasticsearchService.class);
+
+    public static void addMessageQueueListener(){
         try {
-            if (!indexExists()) {
+            GetIndexRequest request = new GetIndexRequest(indexName);
+            boolean exist = client.indices().exists(request, RequestOptions.DEFAULT);
+            if (exist) {
+                client.indices().delete(new DeleteIndexRequest(indexName), RequestOptions.DEFAULT);
+                String index = createElasticIndex();
+                logger.info("Index "+index+" destroyed and recreated.");
+            } else {
                 String index = createElasticIndex();
                 logger.info("Index "+index+" created.");
-            } else {
-                logger.info("Index already existed.");
             }
         } catch (IOException ex) {
-            logger.error("Error occurred! "+ex.getMessage());
-            return;
-        }
-
-        while (true) {
-            try {
-                Object jobMessage = jedis.rpoplpush(messageQueue, workingQueue);
-                if (jobMessage == null) continue;
-
-                JsonNode job = new ObjectMapper().readTree((String)jobMessage);
-                String message = job.get(messageField).asText();
-                String operation = job.get(operationField).asText();
-                logger.info("New Job Message Queue received: Operation: " + operation + ". Message:" + message);
-                if (operation.equals(operationPost)) {
-                    JsonNode plan = new ObjectMapper().readTree(message);
-                    String result = postDocument(plan, null, null, indexName);
-                    logger.info("Operation "+operation +" completed with result: " + result);
-                } else if (operation.equals(operationDelete)) {
-                    String result = deleteDocument(message);
-                    logger.info("Operation "+operation+" completed with result: " + result);
-                } else {
-                    throw new IOException(operation);
-                }
-            } catch (JsonProcessingException ex){
-                logger.error("Unable to process message as JsonNode:"+ ex.getMessage());
-                break;
-            } catch (IOException ex) {
-                logger.error("Unidentified Operation Type detected: "+ ex.getMessage());
-                break;
-            } catch (NullPointerException ex){
-                //logger.error("NullPointerException detected: "+ ex.getMessage());
-            }
+            logger.error("Error occurred when initializing message queue listener! "+ex.getMessage());
         }
     }
 
-    private static boolean indexExists() throws IOException {
-        GetIndexRequest request = new GetIndexRequest(indexName);
-        return client.indices().exists(request, RequestOptions.DEFAULT);
-    }
+    private static final String indexShards = "index.number_of_shards";
+    private static final Integer numOfShards = 3;
+    private static final String indexReplicas = "index.number_of_replicas";
+    private static final Integer numOfReplicas = 2;
 
     private static String createElasticIndex() throws IOException {
         CreateIndexRequest request = new CreateIndexRequest(indexName);
@@ -141,7 +89,7 @@ public class MessageQueueListener {
         return client.indices().create(request, RequestOptions.DEFAULT).index();
     }
 
-    private static String postDocument(JsonNode jsonNode, String parentId, String ancestorId, String name) {
+    public static String postDocument(JsonNode jsonNode, String parentId, String ancestorId, String name) {
         if(jsonNode==null) return null;
         try{
             IndexRequest request = new IndexRequest(indexName);
@@ -182,10 +130,11 @@ public class MessageQueueListener {
                     postDocument(jsonNode.get(plan_pscs), documentId, ancestorId, plan_pscs);
                     break;
                 case plan_lps:
-                    postArrDocument(jsonNode.get(plan_lps), documentId, ancestorId);
+                    ArrayNode jsonArray = (ArrayNode) jsonNode.get(plan_lps);
+                    jsonArray.forEach(jn -> postDocument(jn, documentId, ancestorId, plan_lps));
                     break;
                 default:
-                    logger.info("Plain-text key "+key+"-"+e.getValue()+"skipped in checking nested objects.");
+                    logger.info("Skipping plain text key value pair ("+key+"-"+e.getValue()+") in iterating nested objects.");
                     break;
             }
         });
@@ -200,14 +149,14 @@ public class MessageQueueListener {
                     builder.field(key, jsonNode.get(key).asText());
                 }
             }
+            builder.startObject("plan_join");
             if(parentId==null){
-                builder.startObject("plan_join").field("name", "plan").endObject();
-            }else{
-                builder.startObject("plan_join");
+                builder.field("name", "plan");
+            }else {
                 builder.field("parent", parentId);
                 builder.field("name", name);
-                builder.endObject();
             }
+            builder.endObject();
             builder.endObject();
             return builder;
         }catch (IOException ex){
@@ -216,12 +165,7 @@ public class MessageQueueListener {
         }
     }
 
-    private static void postArrDocument(JsonNode jsonNode, String documentId, String ancestorId) {
-        ArrayNode jsonArray = (ArrayNode) jsonNode;
-        jsonArray.forEach(jn -> postDocument(jn, documentId, ancestorId, plan_lps));
-    }
-
-    private static String deleteDocument(String documentId) throws IOException {
+    public static String deleteDocument(String documentId) throws IOException {
         if(documentId==null)return null;
         try {
             DeleteByQueryRequest request = new DeleteByQueryRequest(indexName);
