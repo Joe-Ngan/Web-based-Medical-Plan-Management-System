@@ -2,7 +2,6 @@ package edu.northeastern.Service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.http.HttpHost;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
 import org.elasticsearch.action.index.IndexRequest;
@@ -55,6 +54,9 @@ public class ElasticsearchService {
     private static final RestHighLevelClient client = new RestHighLevelClient(RestClient.builder(new HttpHost(hostname, elastic_port, scheme)));
     private static final Logger logger = LoggerFactory.getLogger(ElasticsearchService.class);
 
+    /**
+     1. Generate or re-generate index in elasticsearch
+     **/
     public static void addMessageQueueListener(){
         try {
             GetIndexRequest request = new GetIndexRequest(indexName);
@@ -77,6 +79,9 @@ public class ElasticsearchService {
     private static final String indexReplicas = "index.number_of_replicas";
     private static final Integer numOfReplicas = 2;
 
+    /**
+     1.1 Building index with : mapping(w/ parent-child relationship), shard, replica
+     **/
     private static String createElasticIndex() throws IOException {
         CreateIndexRequest request = new CreateIndexRequest(indexName);
         request.settings(Settings.builder()
@@ -89,6 +94,9 @@ public class ElasticsearchService {
         return client.indices().create(request, RequestOptions.DEFAULT).index();
     }
 
+    /**
+     2 postDocument (recursive)
+     **/
     public static String postDocument(JsonNode jsonNode, String parentId, String ancestorId, String name) {
         if(jsonNode==null) return null;
         try{
@@ -102,11 +110,13 @@ public class ElasticsearchService {
                 ancestorId = documentId;
             }
             request.routing(ancestorId);
+            //1. generate builder
             request.source(generateBuilder(jsonNode, parentId, name));
-
+            //2. building current document
             IndexResponse indexResponse = client.index(request, RequestOptions.DEFAULT);
-
+            //3. recursive posting documents
             checkForNestedObjectsInJsonNode(jsonNode, documentId, ancestorId);
+
             logger.info("Document with id: "+indexResponse.getId()+" posted.");
             return indexResponse.getResult().name();
         }catch (IOException ex){
@@ -116,6 +126,9 @@ public class ElasticsearchService {
         }
     }
 
+    /**
+     2.3 for any key-value pairs: if the value is object or array, go recursive and call postDocument
+     **/
     private static void checkForNestedObjectsInJsonNode(JsonNode jsonNode, String documentId, String ancestorId) {
         jsonNode.fields().forEachRemaining(e -> {
             String key = e.getKey();
@@ -165,6 +178,9 @@ public class ElasticsearchService {
         }
     }
 
+    /**
+     3 deleteDocument: query for _routing to delete by documentId
+     **/
     public static String deleteDocument(String documentId) throws IOException {
         if(documentId==null)return null;
         try {
@@ -180,65 +196,5 @@ public class ElasticsearchService {
             ex.printStackTrace();
             return null;
         }
-    }
-
-    public static String patchDocument(JsonNode objectNode, String parentId, String ancestorId, String name) {
-        if(objectNode==null) return null;
-        try{
-            ArrayNode oldPlanNodelinkedPlanServices = (ArrayNode)objectNode.get("linkedPlanServices");
-            for (JsonNode jn : oldPlanNodelinkedPlanServices) {
-                JsonNode linkedService = jn.get("linkedService");
-                JsonNode objectId = linkedService.get("objectId");
-                System.out.println("First we got object Id in linkedService"+objectId.asText());
-            }
-            IndexRequest request = new IndexRequest(indexName);
-            String documentId = objectNode.get(plan_objid).asText();
-            request.id(documentId);
-            if(ancestorId == null) {
-                ancestorId = parentId;
-            }
-            if(ancestorId == null) {
-                ancestorId = documentId;
-            }
-            request.routing(ancestorId);
-            request.source(generateBuilder(objectNode, parentId, name));
-
-            IndexResponse indexResponse = client.index(request, RequestOptions.DEFAULT);
-
-            checkForNestedObjectsInJsonNode(objectNode, documentId, ancestorId);
-            logger.info("Document with id: "+indexResponse.getId()+" posted.");
-            return indexResponse.getResult().name();
-        }catch (IOException ex){
-            logger.error("Error occurred in creating document"+objectNode.get(plan_objid).asText()+": "+ex.getMessage());
-            ex.printStackTrace();
-            return null;
-        } catch (NullPointerException ex){
-            System.out.println(ex.getMessage());
-            return null;
-        }
-    }
-
-    private static void checkForNestedObjectsInJsonNodePatch(ObjectNode jsonNode, String documentId, String ancestorId) {
-        jsonNode.fields().forEachRemaining(e -> {
-            String key = e.getKey();
-            switch (key){
-                case plan_pcs:
-                    postDocument(jsonNode.get(plan_pcs), documentId, ancestorId, plan_pcs);
-                    break;
-                case plan_ls:
-                    postDocument(jsonNode.get(plan_ls), documentId, ancestorId, plan_ls);
-                    break;
-                case plan_pscs:
-                    postDocument(jsonNode.get(plan_pscs), documentId, ancestorId, plan_pscs);
-                    break;
-                case plan_lps:
-                    ArrayNode jsonArray = (ArrayNode) jsonNode.get(plan_lps);
-                    jsonArray.forEach(jn -> postDocument(jn, documentId, ancestorId, plan_lps));
-                    break;
-                default:
-                    logger.info("Skipping plain text key value pair ("+key+"-"+e.getValue()+") in iterating nested objects.");
-                    break;
-            }
-        });
     }
 }

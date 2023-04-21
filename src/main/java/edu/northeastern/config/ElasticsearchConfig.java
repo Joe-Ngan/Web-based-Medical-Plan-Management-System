@@ -1,7 +1,6 @@
 package edu.northeastern.config;
 
 import org.apache.http.HttpHost;
-import org.elasticsearch.client.ElasticsearchClient;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.springframework.context.annotation.Bean;
@@ -21,16 +20,4 @@ public class ElasticsearchConfig {
         return new RestHighLevelClient(
                 RestClient.builder(new HttpHost("localhost", 9200, "http")));
     }
-
-//    @Bean
-//    public ElasticsearchTransport elasticsearchTransport() {
-//        return new RestClientTransport(
-//                restClient(), new JacksonJsonpMapper());
-//    }
-//
-//    @Bean
-//    public ElasticsearchClient elasticsearchClient(){
-//        ElasticsearchClient client = new ElasticsearchClient(elasticsearchTransport());
-//        return client;
-//    }
 }

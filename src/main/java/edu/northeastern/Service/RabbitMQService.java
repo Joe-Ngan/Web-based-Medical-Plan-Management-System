@@ -1,9 +1,7 @@
 package edu.northeastern.Service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,8 +48,6 @@ public class RabbitMQService {
 
             switch (operation){
                 case operationPost:
-                    JsonNode jsonNode = new ObjectMapper().readTree(message);
-                    System.out.println(jsonNode);
                     String postResult = elasticsearchService.postDocument(new ObjectMapper().readTree(message), null, null, indexName);
                     logger.info("Operation "+operation +" completed with result: " + postResult);
                     break;

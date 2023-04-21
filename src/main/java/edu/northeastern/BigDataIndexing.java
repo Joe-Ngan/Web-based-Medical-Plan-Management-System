@@ -9,13 +9,13 @@ import org.springframework.cache.annotation.EnableCaching;
 
 @SpringBootApplication
 @EnableCaching
-public class Demo1Application {
+public class BigDataIndexing {
 
     @Autowired
     private static ElasticsearchService elasticsearchService;
 
     public static void main(String[] args) {
-        SpringApplication.run(Demo1Application.class, args);
+        SpringApplication.run(BigDataIndexing.class, args);
         System.out.println("Hello World!");
         elasticsearchService.addMessageQueueListener();
     }

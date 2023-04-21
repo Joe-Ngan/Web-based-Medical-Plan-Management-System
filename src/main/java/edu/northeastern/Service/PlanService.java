@@ -1,18 +1,13 @@
 package edu.northeastern.Service;
 
-import com.auth0.jwk.InvalidPublicKeyException;
-import com.auth0.jwk.JwkException;
 import com.auth0.jwt.exceptions.TokenExpiredException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.github.fge.jsonschema.core.exceptions.ProcessingException;
-import com.github.fge.jsonschema.main.JsonSchema;
-import com.github.fge.jsonschema.main.JsonSchemaFactory;
 import edu.northeastern.excpetions.ResourceNotFoundException;
-import edu.northeastern.model.LinkedPlanService;
+import edu.northeastern.repository.PlanRepository;
 import edu.northeastern.utils.ETagUtils;
 import edu.northeastern.utils.JsonUtils;
 import edu.northeastern.utils.JwtUtils;
@@ -25,12 +20,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import javax.servlet.http.HttpServletRequest;
-import java.net.MalformedURLException;
-import java.net.URISyntaxException;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -50,7 +39,7 @@ public class PlanService {
     private RabbitMQService rabbitMQService;
 
     @Autowired
-    private RedisService redisService;
+    private PlanRepository planRepository;
 
     private static final Logger logger = LoggerFactory.getLogger(PlanService.class);
 
@@ -72,14 +61,14 @@ public class PlanService {
 
             logger.info("[POST] planId: ("+realId + ") is generated in process of creating a new plan");
 
-            redisService.traverseInput(requestBodyJson);
-            redisService.postValue(realId, requestBodyJson.toString());
+            planRepository.traverseInput(requestBodyJson);
+            planRepository.putValue(realId, requestBodyJson.toString());
             rabbitMQService.sendDocument(request, "post");
 
             Map<String, String> response = new HashMap<>();
             response.put("message", "Created data with key:"+objectId);
             HttpHeaders headers = new HttpHeaders();
-            String value = redisService.getValue(realId);
+            String value = planRepository.getValue(realId);
             headers.set("ETag", eTagUtils.generateEtag(value));
             return new ResponseEntity<>(response,headers,HttpStatus.CREATED);
         } catch (JsonProcessingException ex){
@@ -100,7 +89,7 @@ public class PlanService {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
             }
             String realId = "id_"+"plan"+"_"+planId;
-            String value = redisService.getValue(realId);
+            String value = planRepository.getValue(realId);
             if ((value==null) || value.equals(Optional.empty())){
                 throw new ResourceNotFoundException("Object does not exist.");
             }
@@ -111,7 +100,7 @@ public class PlanService {
                 return new ResponseEntity<>(HttpStatus.NOT_MODIFIED);
             }
             JsonNode node = JsonUtils.stringToNode(value);
-            redisService.populateNestedData(node, null);
+            planRepository.populateNestedData(node, null);
 
             //set headers with etag
             HttpHeaders headers = new HttpHeaders();
@@ -137,7 +126,7 @@ public class PlanService {
             }
 
             String realId = "id_"+"plan"+"_"+planId;
-            String value = redisService.getValue(realId);
+            String value = planRepository.getValue(realId);
             if (value.equals(null) || value.equals(Optional.empty())){
                 throw new ResourceNotFoundException("Object does not exist.");
             }
@@ -147,7 +136,7 @@ public class PlanService {
                 return new ResponseEntity<>("eTag is empty or not matched", HttpStatus.BAD_REQUEST);
             }
 
-            List<String> undeleted = redisService.deleteValueTraverse(realId);
+            List<String> undeleted = planRepository.deleteValueTraverse(realId);
             if(undeleted.size()>0){
                 throw new ResourceNotFoundException("Objects do not exist!"+undeleted.stream().collect(Collectors.joining(", ")));
             }
@@ -169,7 +158,7 @@ public class PlanService {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Invalid token");
             }
             String realId = "id_"+"plan"+"_"+planId;
-            String oldPlanStr = redisService.getValue(realId); //从key-value 中获取id_plan_asdljkljad-508的value
+            String oldPlanStr = planRepository.getValue(realId);
             //validate etag
             if(!(eTagUtils.verifyEtag(request, oldPlanStr))){
                 return new ResponseEntity<>("Correct eTag required before patchign. ETag is empty or not matched", HttpStatus.BAD_REQUEST);
@@ -185,7 +174,7 @@ public class PlanService {
             }
 
             JsonNode oldPlanNode = JsonUtils.stringToNode(oldPlanStr);
-            redisService.populateNestedData(oldPlanNode, null);
+            planRepository.populateNestedData(oldPlanNode, null);
             oldPlanStr = oldPlanNode.toString();
 
             ArrayNode existLinkedPlanServices = (ArrayNode) oldPlanNode.get("linkedPlanServices");
@@ -223,18 +212,18 @@ public class PlanService {
             }
 
             patchNewNode.set("linkedPlanServices", existLinkedPlanServices);
-            redisService.traverseInput(patchNewNode);
-            redisService.postValue(realId, patchNewNode.toString());
+            planRepository.traverseInput(patchNewNode);
+            planRepository.putValue(realId, patchNewNode.toString());
             logger.info("New Job Message Queue will be received: Operation: " + "patch" + ". Message:" + patchNewNode);
-            JsonNode node = JsonUtils.stringToNode(redisService.getValue(realId));
-            redisService.populateNestedData(node, null);
+            JsonNode node = JsonUtils.stringToNode(planRepository.getValue(realId));
+            planRepository.populateNestedData(node, null);
             rabbitMQService.sendDocument(node.toString(), "post");
 
 
             Map<String, String> response = new HashMap<>();
             response.put("message", "Plan with ObjectId: "+planId+" updated.");
             HttpHeaders headers = new HttpHeaders();
-            String newValue = redisService.getValue(realId);
+            String newValue = planRepository.getValue(realId);
             headers.set("ETag", eTagUtils.generateEtag(newValue));
             return new ResponseEntity<>(response,headers,HttpStatus.OK);
         }catch (ResourceNotFoundException ex) {

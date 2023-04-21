@@ -1,15 +1,11 @@
 package edu.northeastern.controller;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.github.fge.jsonschema.core.exceptions.ProcessingException;
 import edu.northeastern.Service.PlanService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletRequest;
-import java.net.URISyntaxException;
-import java.security.NoSuchAlgorithmException;
 
 @RestController
 @RequestMapping("/plan")
